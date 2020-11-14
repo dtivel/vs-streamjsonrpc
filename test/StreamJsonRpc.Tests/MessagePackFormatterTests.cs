@@ -346,6 +346,47 @@ public class MessagePackFormatterTests : TestBase
         Assert.Equal(dynamic.error.code, (int?)request.Error?.Code);
     }
 
+    [Fact]
+    public async Task Repro()
+    {
+        var (clientStream, serverStream) = FullDuplexStream.CreatePair();
+
+        var resolvers = new IFormatterResolver[] { MessagePackSerializerOptions.Standard.Resolver };
+        var options = MessagePackSerializerOptions.Standard
+            .WithSecurity(MessagePackSecurity.UntrustedData)
+            .WithResolver(CompositeResolver.Create(new[] { new FruitFormatter() }, resolvers));
+        var clientFormatter = new MessagePackFormatter();
+        var serverFormatter = new MessagePackFormatter();
+
+        clientFormatter.SetMessagePackSerializerOptions(options);
+        serverFormatter.SetMessagePackSerializerOptions(options);
+
+        var clientHandler = new LengthHeaderMessageHandler(clientStream.UsePipe(), clientFormatter);
+        var serverHandler = new LengthHeaderMessageHandler(serverStream.UsePipe(), serverFormatter);
+
+        var fruit = new Fruit(name: "peach");
+        var client = new Client();
+        var server = new Server();
+        var clientRpc = new JsonRpc(clientHandler, client);
+        var serverRpc = new JsonRpc(serverHandler, server);
+
+        serverRpc.TraceSource = new TraceSource("Server", SourceLevels.Verbose);
+        clientRpc.TraceSource = new TraceSource("Client", SourceLevels.Verbose);
+
+        serverRpc.TraceSource.Listeners.Add(new XunitTraceListener(this.Logger));
+        clientRpc.TraceSource.Listeners.Add(new XunitTraceListener(this.Logger));
+
+        clientRpc.StartListening();
+        serverRpc.StartListening();
+
+        var tcs = new TaskCompletionSource<IFruit>();
+
+        client.OnFruitRaised = fruit => tcs.SetResult(fruit);
+        server.RaiseFruit(fruit);
+        IFruit actualResult = await tcs.Task.WithCancellation(this.TimeoutToken);
+        Assert.Equal(fruit.Name, actualResult.Name);
+    }
+
     private T Read<T>(object anonymousObject)
         where T : JsonRpcMessage
     {
@@ -436,7 +477,21 @@ public class MessagePackFormatterTests : TestBase
 
     private class Server
     {
+        public event EventHandler<IFruit>? OnFruit;
+
         public int Add(int a, int b) => a + b;
+
+        internal void RaiseFruit(IFruit fruit)
+        {
+            this.OnFruit?.Invoke(this, fruit);
+        }
+    }
+
+    private class Client
+    {
+        internal Action<IFruit>? OnFruitRaised { get; set; }
+
+        public void OnFruit(IFruit fruit) => this.OnFruitRaised?.Invoke(fruit);
     }
 
     private class CustomOptions : MessagePackSerializerOptions
@@ -455,5 +510,60 @@ public class MessagePackFormatterTests : TestBase
         internal int CustomProperty { get; set; }
 
         protected override MessagePackSerializerOptions Clone() => new CustomOptions(this);
+    }
+
+    [MessagePack.Union(key: 0, typeof(Fruit))]
+#pragma warning disable SA1201 // Elements should appear in the correct order
+    public interface IFruit
+#pragma warning restore SA1201 // Elements should appear in the correct order
+    {
+        string Name { get; }
+    }
+
+    private class Fruit : IFruit
+    {
+        internal Fruit(string name)
+        {
+            this.Name = name;
+        }
+
+        public string Name { get; }
+    }
+
+    private class FruitFormatter : IMessagePackFormatter<Fruit>
+    {
+        private const string NamePropertyName = "name";
+
+        public Fruit Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
+        {
+            string? name = null;
+
+            int propertyCount = reader.ReadMapHeader();
+
+            for (var propertyIndex = 0; propertyIndex < propertyCount; ++propertyIndex)
+            {
+                switch (reader.ReadString())
+                {
+                    case NamePropertyName:
+                        name = reader.ReadString();
+                        break;
+
+                    default:
+                        reader.Skip();
+                        break;
+                }
+            }
+
+            Microsoft.Assumes.NotNullOrEmpty(name);
+
+            return new Fruit(name);
+        }
+
+        public void Serialize(ref MessagePackWriter writer, Fruit value, MessagePackSerializerOptions options)
+        {
+            writer.WriteMapHeader(count: 1);
+            writer.Write(NamePropertyName);
+            writer.Write(value.Name);
+        }
     }
 }
