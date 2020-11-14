@@ -354,7 +354,7 @@ public class MessagePackFormatterTests : TestBase
         var resolvers = new IFormatterResolver[] { MessagePackSerializerOptions.Standard.Resolver };
         var options = MessagePackSerializerOptions.Standard
             .WithSecurity(MessagePackSecurity.UntrustedData)
-            .WithResolver(CompositeResolver.Create(new[] { new FruitFormatter() }, resolvers));
+            .WithResolver(CompositeResolver.Create(new[] { new IFruitFormatter() }, resolvers));
         var clientFormatter = new MessagePackFormatter();
         var serverFormatter = new MessagePackFormatter();
 
@@ -530,11 +530,11 @@ public class MessagePackFormatterTests : TestBase
         public string Name { get; }
     }
 
-    private class FruitFormatter : IMessagePackFormatter<Fruit>
+    private class IFruitFormatter : IMessagePackFormatter<IFruit>
     {
         private const string NamePropertyName = "name";
 
-        public Fruit Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
+        public IFruit Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
         {
             string? name = null;
 
@@ -559,7 +559,7 @@ public class MessagePackFormatterTests : TestBase
             return new Fruit(name);
         }
 
-        public void Serialize(ref MessagePackWriter writer, Fruit value, MessagePackSerializerOptions options)
+        public void Serialize(ref MessagePackWriter writer, IFruit value, MessagePackSerializerOptions options)
         {
             writer.WriteMapHeader(count: 1);
             writer.Write(NamePropertyName);
